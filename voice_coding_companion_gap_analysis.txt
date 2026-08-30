@@ -1,0 +1,1423 @@
+Voice Coding Companion Gap Analysis
+Project: /Users/nehadubey/Desktop/voice_agent
+Date: 2026-07-05
+
+Goal
+Redesign the current voice coding assistant into a more human-like coding companion where:
+- Audio/mic is OFF by default.
+- Mic starts only from explicit user action: hotkey, mic button, or push-to-talk.
+- One user trigger should produce one recording, one backend request, one response, then audio returns to IDLE.
+- Highlighted text is only context, never a trigger.
+- The assistant can keep task memory active while audio is idle.
+- The assistant should not mark tasks resolved unless the user says fixed/done/solved/working or tests/system evidence proves it.
+
+
+================================================================================
+1. CURRENT END-TO-END VOICE FLOW
+================================================================================
+
+Current Electron desktop entry points
+
+Relevant files:
+- electron/main.js
+- electron/preload.js
+- electron/renderer/renderer.js
+
+How the mic starts today
+
+1. Renderer init wires hotkey and mic button:
+
+    electron/renderer/renderer.js:85-91
+    - state.config = await window.codeDuck.getConfig()
+    - window.codeDuck.onShortcut((context) => startVoiceFlow(context))
+    - micButton.addEventListener("click", () => startVoiceFlow())
+
+2. Global shortcut captures selection first, then calls renderer:
+
+    electron/main.js:236-243
+    - globalShortcut.register(...)
+    - const context = await captureSelection({ hideWindow: false })
+    - showMainWindow()
+    - mainWindow.webContents.send("shortcut:triggered", context)
+
+3. startVoiceFlow captures context and immediately records:
+
+    electron/renderer/renderer.js:109-131
+    - startFocusMusicOnce()
+    - stopCurrentSpeech()
+    - wakeFromSleep()
+    - state.conversationActive = true
+    - state.conversationExpiresAt = Date.now() + FOLLOW_UP_WINDOW_MS
+    - state.selectedContext = preCapturedContext || await window.codeDuck.captureSelection()
+    - await greetThenListen()
+
+4. greetThenListen speaks greeting, then starts recording:
+
+    electron/renderer/renderer.js:208-214
+    - greeting = "Hi, I am Neha. How can I help you?"
+    - await speakLocal(greeting)
+    - await startRecording()
+
+Conclusion:
+The mic starts from explicit hotkey/mic button, but after that the code keeps a "conversationActive" window and can auto-start follow-up recording. That violates the desired "one trigger -> one turn -> idle" behavior.
+
+
+When the mic stops today
+
+Recording starts here:
+
+    electron/renderer/renderer.js:134-165
+    - navigator.mediaDevices.getUserMedia(...)
+    - state.mediaRecorder = new MediaRecorder(stream)
+    - state.mediaRecorder.start(250)
+    - state.recordingStopTimer = setTimeout(() => stopRecording(), RECORDING_MAX_MS)
+    - startSilenceDetection(stream)
+
+Recording stops here:
+
+    electron/renderer/renderer.js:174-180
+    - state.mediaRecorder.stop()
+    - appEl.classList.remove("recording")
+    - status becomes Transcribing or Ready
+
+MediaRecorder stop event:
+
+    electron/renderer/renderer.js:148-158
+    - clear timers
+    - close audio context
+    - stop media stream tracks
+    - if no speech: handleNoSpeechDetected(...)
+    - else: await sendAudioRequest()
+
+
+How silence/pause detection is handled today
+
+Silence/VAD is custom RMS logic:
+
+    electron/renderer/renderer.js:408-438
+
+Constants:
+
+    electron/renderer/renderer.js:28-37
+    - FOLLOW_UP_WINDOW_MS = 120000
+    - RECORDING_MAX_MS = 20000
+    - INITIAL_SILENCE_MS = 10000
+    - END_SILENCE_MS = 1600
+    - MIN_RECORDING_MS = 900
+    - SPEECH_RMS_THRESHOLD = 0.01
+    - BARGE_IN_RMS_THRESHOLD = 0.045
+
+Logic:
+- RMS >= SPEECH_RMS_THRESHOLD sets hasDetectedSpeech = true.
+- If speech happened and then quiet for END_SILENCE_MS, stop.
+- If no speech for INITIAL_SILENCE_MS, stop.
+- If neither happens, max timeout stops at RECORDING_MAX_MS.
+
+Problems:
+- This is not robust VAD. Background noise can cross the RMS threshold.
+- The backend STT can return fake transcripts for silence, e.g. "... ... ..." or "thank you very much".
+- Current code now filters some silence hallucinations, but the architecture still tries to keep the conversation open and can auto-listen.
+
+
+What happens after transcription
+
+Frontend:
+
+    electron/renderer/renderer.js:466-474
+    - Blob is created from recorded chunks.
+    - Blob is converted to base64.
+    - createRequest({ inputType: "audio", audioBase64, mimeType })
+    - streamRequest(request)
+
+Backend:
+
+    local_service/agent_responder.py:646-685
+    - if inputType == "text", use commandText
+    - if inputType == "audio", decode audioBase64
+    - write temp audio file
+    - transcribe_audio(...)
+    - if empty or likely silence hallucination, return empty_transcript error
+    - else pass transcript into intent/agent flow
+
+Streaming:
+
+    electron/renderer/renderer.js:477-512
+    - POST /agent/respond/stream
+    - read SSE events
+    - handleStreamEvent(...) receives status/transcript/final/error events
+
+
+What happens after agent response
+
+Frontend final response handler:
+
+    electron/renderer/renderer.js:559-658
+
+Important behavior:
+- Empty transcript may retry once on first turn.
+- Non-control answer is displayed.
+- If audioBase64 exists, playAudio(..., () => { if (!controlResponse) scheduleNextListen(response); })
+- If no audioBase64, it still calls scheduleNextListen(response).
+
+This is the main issue:
+
+    electron/renderer/renderer.js:648-655
+    if (response.audioBase64) {
+      playAudio(..., () => {
+        if (!controlResponse) scheduleNextListen(response);
+      });
+    } else {
+      if (!controlResponse) scheduleNextListen(response);
+    }
+
+So after an answer, the app may start listening again automatically.
+
+
+Does it automatically go back to listening?
+
+Yes.
+
+Auto-listen is here:
+
+    electron/renderer/renderer.js:1087-1100
+
+    function scheduleNextListen(response) {
+      if (!shouldAutoListen(response)) ...
+      setStatus("Conversation active", "Ask your next question");
+      state.autoListenTimer = setTimeout(() => {
+        startFollowUpRecording();
+      }, 900);
+    }
+
+Auto-listen condition:
+
+    electron/renderer/renderer.js:1102-1110
+
+    return state.conversationActive
+      && !isSleeping()
+      && Date.now() < state.conversationExpiresAt
+      && response.ok
+      && ["answer", "needs_clarification", "test_result"].includes(response.uiState)
+      && projectRootPrompt.classList.contains("hidden")
+      && patchPanel.classList.contains("hidden");
+
+Follow-up recording:
+
+    electron/renderer/renderer.js:1231-1238
+    - if conversationActive and not sleeping, startRecording({ followUp: true })
+
+This directly conflicts with the desired rule:
+After RESPONDING, go back to IDLE. Do not auto-listen.
+
+
+Is selected/highlighted text triggering anything?
+
+Selected text by itself does not appear to trigger recording. It is captured during explicit hotkey/mic flow.
+
+Desktop Electron:
+
+    electron/main.js:132-155
+    - captureSelection reads current clipboard
+    - sends Cmd+C using osascript
+    - reads selected text from clipboard
+    - restores clipboard
+    - returns selectedText, activeApp, windowTitle, file info
+
+Hotkey path:
+
+    electron/main.js:236-243
+    - hotkey captures selection and sends it to renderer
+
+Renderer request context:
+
+    electron/renderer/renderer.js:661-683
+    - selectedText: state.selectedContext?.selectedText || ""
+    - fileName, filePath, projectRoot, activeApp, windowTitle
+
+Important distinction:
+- Highlighting text does not start listening.
+- Pressing the hotkey starts listening and also captures selected text.
+- This is mostly aligned with the desired behavior.
+
+Old VS Code extension:
+
+    src/extension.js:16-36
+    - openPanel(..., autoAsk)
+    - commands can pass autoAsk when invoked
+
+This old extension has autoAsk plumbing. For the Electron-first product, it is not the main flow, but it should not be reused for the new MVP unless it is explicitly push-to-talk.
+
+
+================================================================================
+2. FRONTEND VOICE STATE CODE
+================================================================================
+
+Files handling mic/listening state
+
+Primary:
+- electron/renderer/renderer.js
+
+Supporting:
+- electron/main.js for global shortcut and context capture
+- electron/preload.js for IPC bridge
+
+Current state object:
+
+    electron/renderer/renderer.js:39-78
+
+Key fields:
+- mediaRecorder
+- chunks
+- selectedContext
+- conversationActive
+- autoListenTimer
+- sleepTimer
+- sleepUntil
+- conversationExpiresAt
+- recordingStopTimer
+- silenceTimer
+- hasDetectedSpeech
+- currentTurnIsFollowUp
+- emptyTranscriptRetries
+- bargeIn.*
+
+Problem:
+This is conversation-window state, not a clean audio state machine. There is no single "audioState" enum like IDLE, LISTENING, RECORDING, PROCESSING, RESPONDING.
+
+
+Recording start/stop logic
+
+Start:
+
+    electron/renderer/renderer.js:134-165
+
+Stop:
+
+    electron/renderer/renderer.js:174-180
+
+No-speech handling:
+
+    electron/renderer/renderer.js:183-205
+
+Current behavior:
+- Follow-up no-speech returns Ready.
+- First-turn no-speech retries once and starts recording again after 700ms.
+- Second miss sleeps.
+
+Gap:
+Desired behavior says no auto-retry. If no speech, return IDLE and optionally show a quiet message. The user should explicitly press hotkey/mic again.
+
+
+Silence detection / VAD logic
+
+    electron/renderer/renderer.js:408-438
+
+This should remain only as an intra-recording stop detector. It should not trigger a new listen cycle.
+
+
+Push-to-talk or mic button logic
+
+Desktop mic button:
+
+    electron/renderer/renderer.js:90
+    micButton.addEventListener("click", () => startVoiceFlow())
+
+This is click-to-start, not true push-to-talk.
+
+Old VS Code webview has mouse/touch push-like handlers:
+
+    src/extension.js:490-493
+    - mic.addEventListener("mousedown", startRecording)
+    - mic.addEventListener("mouseup", stopRecording)
+    - mic.addEventListener("touchstart", startRecording)
+
+For the Electron MVP, add true push-to-talk only if needed:
+- pointerdown: start recording
+- pointerup/pointercancel: stop recording
+- no auto-follow-up after response
+
+
+Response handling logic
+
+    electron/renderer/renderer.js:559-658
+
+Main gap:
+- scheduleNextListen is called after normal responses.
+- Project root cancel and patch cancel also call scheduleNextListen.
+
+Auto-listen callers:
+- electron/renderer/renderer.js:595
+- electron/renderer/renderer.js:652
+- electron/renderer/renderer.js:655
+- electron/renderer/renderer.js:718
+- electron/renderer/renderer.js:771
+
+These must be removed or replaced with setAudioState("IDLE").
+
+
+Barge-in mic monitoring
+
+The app starts mic monitoring while Neha is speaking:
+
+    electron/renderer/renderer.js:999-1069
+
+Behavior:
+- startBargeInMonitor opens getUserMedia while audio is playing.
+- If user audio crosses threshold, it stops speech and starts follow-up recording:
+
+    electron/renderer/renderer.js:1063-1068
+    - clearAutoListen()
+    - state.conversationActive = true
+    - setStatus("Interrupted", "Listening to you now")
+    - setTimeout(() => startRecording({ followUp: true, interrupted: true }), 180)
+
+This violates "mic should stay OFF by default" and "mic should start only when explicitly triggered".
+
+Recommendation:
+Remove barge-in for MVP. If interruption is needed later, make it explicit:
+- press hotkey during response to interrupt
+- press and hold mic button to interrupt
+- optional setting: "hands-free interruption" off by default
+
+
+================================================================================
+3. BACKEND API CONTRACT
+================================================================================
+
+File:
+- local_service/agent_contract.py
+
+Request model:
+
+    local_service/agent_contract.py:106-115
+
+    class AgentRespondRequest(BaseModel):
+        requestId: str
+        inputType: InputType = "text"
+        commandText: str = ""
+        audioBase64: str = ""
+        mimeType: str = ""
+        context: AgentContext = Field(default_factory=AgentContext)
+        previousProposal: PreviousProposal | None = None
+        execution: ExecutionOptions = Field(default_factory=ExecutionOptions)
+        settings: RuntimeSettings | None = None
+
+Input types:
+
+    local_service/agent_contract.py:10
+    InputType = Literal["audio", "text"]
+
+Context model:
+
+    local_service/agent_contract.py:52-64
+
+    class AgentContext(BaseModel):
+        source: str = "unknown"
+        selectedText: str = ""
+        surroundingText: str = ""
+        languageId: str = ""
+        fileName: str = ""
+        filePath: str = ""
+        projectRoot: str = ""
+        projectRootApproved: bool = False
+        selectedOnly: bool = False
+        selectedRange: str = ""
+        activeApp: str = ""
+        windowTitle: str = ""
+
+Response model:
+
+    local_service/agent_contract.py:126-140
+
+    class AgentRespondResponse(BaseModel):
+        ok: bool = True
+        requestId: str
+        uiState: UiState
+        intent: Intent
+        transcript: str = ""
+        answer: str = ""
+        proposal: PatchProposal | None = None
+        testResult: TestResult | None = None
+        audioBase64: str = ""
+        audioMimeType: str = "audio/wav"
+        sleepMs: int | None = None
+        actions: list[Action] = Field(default_factory=list)
+        warnings: list[str] = Field(default_factory=list)
+        error: AgentError | None = None
+
+Endpoints:
+
+    local_service/app.py:84-86
+    POST /agent/respond
+
+    local_service/app.py:104-111
+    POST /agent/respond/stream
+
+
+Example payload currently sent by Electron
+
+Created in:
+
+    electron/renderer/renderer.js:661-700
+
+Shape:
+
+    {
+      "requestId": "<uuid>",
+      "inputType": "audio",
+      "commandText": "",
+      "audioBase64": "<base64 webm>",
+      "mimeType": "audio/webm",
+      "context": {
+        "source": "clipboard",
+        "selectedText": "...",
+        "surroundingText": "",
+        "languageId": "...",
+        "fileName": "...",
+        "filePath": "",
+        "projectRoot": "",
+        "projectRootApproved": false,
+        "selectedOnly": false,
+        "selectedRange": "",
+        "activeApp": "...",
+        "windowTitle": "..."
+      },
+      "previousProposal": null,
+      "execution": {
+        "allowTestRun": false,
+        "workingDirectory": "",
+        "testCommand": [],
+        "testIterations": 1
+      }
+    }
+
+Missing fields for desired architecture:
+- sessionId
+- turnId
+- audioState/clientEvent, e.g. "push_to_talk_release" or "hotkey"
+- contextSnapshotId
+- selectedTextHash
+- activeWindowTitle alias if the UI wants that exact field name
+- taskId
+- currentTaskStatus
+- userExplicitTrigger boolean
+- audioDurationMs
+- audioSizeBytes
+- frontendDetectedSpeech boolean
+
+
+================================================================================
+4. CURRENT AGENT PROMPTS AND BEHAVIOR INSTRUCTIONS
+================================================================================
+
+Current orchestrator prompt:
+
+    local_service/agent_graph.py:599-635
+
+Purpose:
+- Classifies into chat/explain/debug/review/fix/refactor/replace/write_test/clarify/unknown.
+- Returns route answer/patch/clarify.
+- Sees session context and selected code preview.
+
+Gap:
+- No concept of current task lifecycle.
+- No categories for side question, task continuation, task resolution, user test result, or casual interruption.
+- No rule that selected text is context only.
+- No rule that audio state is separate from assistant mind state.
+
+
+Current answer prompt:
+
+    local_service/agent_graph.py:672-717
+
+Good parts:
+- Says "You are Neha".
+- Short spoken answer.
+- Human coding partner.
+- No markdown tables.
+- No fake tests/files/APIs.
+
+Gaps:
+- Does not include current_task object.
+- Does not say "answer side question, then return to main task".
+- Does not instruct the model to give one next useful step.
+- Does not enforce unresolved task status.
+- Does not use desired friendly Hinglish tone examples.
+
+
+Current patch prompt:
+
+    local_service/agent_graph.py:720-766
+
+Good parts:
+- Scoped replacement code.
+- No markdown fences.
+- Does not claim tests ran.
+- Supports retry feedback.
+
+Gaps:
+- Does not update task state.
+- Does not record debugging attempts.
+- Does not record whether user is waiting to test.
+- Does not know if previous patch failed.
+
+
+Old prompt path:
+
+    local_service/prompts.py:17-40
+
+This is used by older /ask-* endpoints, not the main /agent/respond flow.
+It still says "You are CodeDuck" and has no Neha task memory.
+
+
+================================================================================
+5. CURRENT LANGGRAPH OR AGENT WORKFLOW
+================================================================================
+
+Important finding:
+There is no compiled LangGraph StateGraph in the current backend.
+The code uses functions named like nodes, but they are called manually in local_service/agent_responder.py.
+
+Current manual workflow:
+
+    local_service/agent_responder.py:27-221
+
+Flow:
+1. transcript_for_request
+2. control_response_for_transcript
+3. if allowTestRun: run_tests_node
+4. input_node
+5. classify_intent_node
+6. llm_orchestrator_node
+7. route_after_intent
+8. if clarify: return clarification
+9. if patch:
+   - require selected_text
+   - project_context_gate_node
+   - patch_node
+   - return patch_preview
+10. else:
+   - answer_node
+   - return answer
+11. finalize_response updates session and attaches TTS
+
+Current node definitions:
+- input_node: local_service/agent_graph.py:75-124
+- classify_intent_node: local_service/agent_graph.py:192-254
+- llm_orchestrator_node: local_service/agent_graph.py:257-298
+- answer_node: local_service/agent_graph.py:301-322
+- patch_node: local_service/agent_graph.py:325-370
+- route_after_intent / route_for_intent: local_service/agent_graph.py:483-492
+- run_tests_node exists, but only executes if request.execution.allowTestRun is true.
+
+Router logic:
+
+    local_service/agent_graph.py:487-492
+
+    if intent in ("chat", "explain", "debug", "review"):
+        return "answer"
+    if intent in ("fix", "refactor", "replace", "write_test"):
+        return "patch"
+    return "clarify"
+
+How selected text and user command are passed:
+
+    local_service/agent_graph.py:83-123
+
+input_node extracts:
+- command_text from transcript/command_text
+- selected_text from context.selectedText
+- surrounding_text from context.surroundingText
+- file_name/file_path/project_root/window_title
+- session_context from passed state
+
+Does current_task exist?
+No.
+
+Does unresolved task exist?
+No.
+
+Does it know if it is waiting for user result?
+No.
+
+
+================================================================================
+6. CURRENT SESSION / MEMORY HANDLING
+================================================================================
+
+File:
+- local_service/session_state.py
+
+Current state:
+
+    local_service/session_state.py:7-14
+
+    _STATE = {
+      "current_topic": "",
+      "recent_turns": deque(maxlen=10),
+      "active_mode": "chat",
+      "last_selected_code_summary": "",
+    }
+
+Current update:
+
+    local_service/session_state.py:52-79
+
+Stores:
+- compact user text
+- compact assistant text
+- intent
+- ui_state
+- current_topic derived heuristically
+- active_mode derived heuristically
+- last selected code summary
+
+What is stored today:
+- current_topic: yes, but heuristic and vague.
+- recent user request: yes, last 10 compact turns.
+- selected code: only a summary, not full code or hash.
+- last assistant step: only compact text in recent_turns.
+- debugging attempts: no structured attempts list.
+- task resolution status: no.
+- waiting for user result: no.
+- current task object: no.
+- active task remains while mic is idle: only topic remains; no reliable task state.
+
+Gap:
+Session memory is conversation memory, not task memory.
+
+
+================================================================================
+7. CURRENT OBSERVED BUGS AND ROOT CAUSES
+================================================================================
+
+Bug: Repeated "I am listening" / starts listening again
+
+Root cause:
+- scheduleNextListen is called after normal responses.
+- shouldAutoListen returns true while conversationActive is true.
+- startFollowUpRecording starts a new MediaRecorder without explicit user trigger.
+
+Relevant code:
+- electron/renderer/renderer.js:648-655
+- electron/renderer/renderer.js:1087-1100
+- electron/renderer/renderer.js:1102-1110
+- electron/renderer/renderer.js:1231-1238
+
+
+Bug: Silence/pause becomes fake user message
+
+Root causes:
+- RMS VAD can mark background noise as speech.
+- STT may return punctuation-only or common hallucinations.
+- The frontend used to show punctuation-only transcripts.
+- Recent fix filters more of these, but architecture should not auto-listen at all.
+
+Relevant code:
+- electron/renderer/renderer.js:408-438
+- local_service/agent_responder.py:688-702
+
+
+Bug: Empty audio gets retried automatically
+
+Root cause:
+- handleNoSpeechDetected retries first-turn no-speech:
+
+    electron/renderer/renderer.js:193-201
+    setTimeout(() => startRecording(), 700)
+
+Desired:
+- No automatic retry.
+- Show "I did not catch that. Press mic again." or just return IDLE.
+
+
+Bug: Mic is opened while assistant speaks
+
+Root cause:
+- startBargeInMonitor opens getUserMedia during playback.
+
+Relevant code:
+- electron/renderer/renderer.js:999-1069
+
+Desired:
+- For MVP, remove this.
+- If needed later, make it an explicit opt-in setting.
+
+
+Bug: Same audio/request duplicate risk
+
+Current mitigation:
+- state.handledResponseIds dedupes final response IDs:
+
+    electron/renderer/renderer.js:559-561
+
+Gap:
+- Backend does not dedupe requestId.
+- Frontend does not guard against very tiny blobs before upload.
+- Backend does not check audio duration or size before STT.
+
+
+================================================================================
+A. WHAT IS ALREADY CORRECT
+================================================================================
+
+1. Explicit primary entry points exist:
+- Hotkey.
+- Mic button.
+
+2. Selected text is mostly treated as context:
+- It is captured during trigger.
+- It is sent in context.selectedText.
+- Highlighting alone does not appear to start listening.
+
+3. Backend contract is reasonably clean:
+- inputType/audioBase64/commandText/context are typed.
+- response includes uiState, intent, answer, proposal, actions, warnings.
+
+4. The agent already separates answer vs patch:
+- explain/debug/review -> answer route.
+- fix/refactor/replace/write_test -> patch route.
+
+5. TTS is attached backend-side and played frontend-side.
+
+6. Some silence hallucination filters already exist:
+- empty transcript.
+- punctuation-only.
+- "thank you very much".
+- "thanks for watching".
+- "uh/um/hm/hmm".
+
+
+================================================================================
+B. WHAT IS ARCHITECTURALLY WRONG
+================================================================================
+
+1. Audio state and assistant mind state are mixed.
+
+Current frontend has:
+- conversationActive
+- conversationExpiresAt
+- autoListenTimer
+- sleepUntil
+
+But it does not have:
+- audioState: IDLE/LISTENING/RECORDING/PROCESSING/RESPONDING
+- assistantMindState: NO_TASK/TASK_ACTIVE/etc.
+
+
+2. Auto-listening is treated as "human-like".
+
+This causes the exact problem the user does not want. Human-like should mean good memory, tone, and task continuity, not always-on mic.
+
+
+3. Task memory is too shallow.
+
+Current session memory stores topic and recent turns. It cannot reliably know:
+- What bug is active.
+- What was tried.
+- What the user should try next.
+- Whether Neha is waiting for user result.
+- Whether the task is resolved.
+
+
+4. Barge-in violates mic-off default.
+
+Listening during assistant speech means the mic is not off by default.
+
+
+5. Empty transcript handling is too active.
+
+The frontend retries recording automatically. Desired MVP should not retry without user trigger.
+
+
+================================================================================
+C. WHAT TO REMOVE
+================================================================================
+
+Frontend:
+
+1. Remove automatic follow-up listening:
+- Remove scheduleNextListen calls from handleFinalResponse.
+- Remove startFollowUpRecording.
+- Remove shouldAutoListen.
+- Remove autoListenTimer or leave only for UI timeout, not mic start.
+
+2. Remove automatic no-speech retry:
+- Remove setTimeout(() => startRecording(), 700) in handleNoSpeechDetected.
+- Remove similar retry in empty transcript final handling.
+
+3. Remove/disable barge-in mic monitor for MVP:
+- startBargeInMonitor
+- monitorBargeIn
+- handleBargeIn auto startRecording
+- stopBargeInMonitor can remain only if activeAudio needs cleanup, but should not open mic.
+
+4. Remove "conversationActive" as an audio control.
+- Replace with assistant task state in backend memory.
+- Keep UI "task active" label if needed, but it must not start mic.
+
+5. Remove wording like "I am still listening" when the mic is idle.
+- Use "I'm here. Press the mic when you want to continue."
+
+
+Backend:
+
+1. Do not return actions that imply listening should continue.
+2. Do not rely on recent_turns as task memory.
+3. Do not mark task done from casual chat.
+
+
+================================================================================
+D. WHAT TO ADD
+================================================================================
+
+1. Explicit audio state machine in frontend:
+
+    IDLE -> LISTENING -> RECORDING -> PROCESSING -> RESPONDING -> IDLE
+
+In MVP, LISTENING and RECORDING can be merged if using MediaRecorder immediately.
+
+2. Task memory object in backend:
+
+    current_task = {
+      task_id,
+      status,
+      intent,
+      title,
+      problem_statement,
+      selected_code_summary,
+      selected_code_hash,
+      file_path,
+      file_name,
+      project_root,
+      attempts,
+      last_assistant_step,
+      waiting_for,
+      evidence,
+      side_conversation_stack,
+      created_at,
+      updated_at,
+      resolved_at
+    }
+
+3. Intent categories:
+- START_TASK
+- CONTINUE_TASK
+- SIDE_QUESTION_RELATED
+- CASUAL_CHAT
+- EXPLAIN_SELECTION
+- DEBUG_TASK
+- PATCH_REQUEST
+- TEST_RESULT
+- USER_RESULT_UPDATE
+- RESOLUTION_CONFIRMATION
+- PAUSE
+- STOP
+- CLARIFY
+
+4. Session update logic:
+- Create task on code-help request.
+- Update task after answer/patch/test.
+- Set WAITING_FOR_USER_RESULT after suggesting a step.
+- Keep task active during casual chat.
+- Resolve only on explicit user done/fixed/working/solved or tests passing.
+
+5. Guardrails:
+- Frontend min audio blob size.
+- Frontend min recording duration.
+- Backend requestId dedupe.
+- Backend audio byte threshold.
+- Backend transcript normalizer for punctuation-only and hallucinations.
+- Ignore empty transcript without TTS and without auto-listen.
+
+
+================================================================================
+E. EXACT FRONTEND CHANGES NEEDED
+================================================================================
+
+1. Add explicit audio state.
+
+Add near current state:
+
+    const AUDIO_STATE = {
+      IDLE: "IDLE",
+      LISTENING: "LISTENING",
+      RECORDING: "RECORDING",
+      PROCESSING: "PROCESSING",
+      RESPONDING: "RESPONDING",
+    };
+
+    state.audioState = AUDIO_STATE.IDLE;
+
+    function setAudioState(next, context = "") {
+      state.audioState = next;
+      if (next === AUDIO_STATE.IDLE) setStatus("Ready", context || `Shortcut: ${state.config.shortcut}`);
+      if (next === AUDIO_STATE.RECORDING) setStatus("Listening", context);
+      if (next === AUDIO_STATE.PROCESSING) setStatus("Thinking", context);
+      if (next === AUDIO_STATE.RESPONDING) setStatus("Answer ready", context);
+    }
+
+
+2. Change startVoiceFlow.
+
+Current:
+- sets conversationActive true
+- sets conversationExpiresAt
+- calls greetThenListen
+
+New:
+- if audioState is not IDLE, ignore or stop current turn.
+- capture selected context.
+- optionally greet only visually or on first launch.
+- start one recording.
+
+Suggested:
+
+    async function startVoiceFlow(preCapturedContext) {
+      if (state.audioState !== AUDIO_STATE.IDLE) return;
+      stopCurrentSpeech();
+      clearPanels();
+      setAudioState(AUDIO_STATE.LISTENING, "Capturing context");
+      state.selectedContext = preCapturedContext || await window.codeDuck.captureSelection();
+      await startRecording({ explicitTrigger: true });
+    }
+
+
+3. Do not auto record after greeting.
+
+Option A:
+- Keep greeting only once on app launch, not every hotkey.
+
+Option B:
+- On hotkey, play short "haan bolo" TTS, then record. But this adds latency.
+
+Recommended MVP:
+- Hotkey immediately records.
+- UI text says "Listening".
+- Do not speak before recording.
+
+
+4. Replace handleNoSpeechDetected.
+
+Current code retries once.
+
+New:
+
+    function handleNoSpeechDetected() {
+      state.chunks = [];
+      clearRecordingTimers();
+      setAudioState(AUDIO_STATE.IDLE, "No speech detected. Press mic to try again.");
+    }
+
+
+5. Replace handleFinalResponse post-response behavior.
+
+Current:
+- playAudio(... scheduleNextListen ...)
+
+New:
+
+    if (response.audioBase64) {
+      setAudioState(AUDIO_STATE.RESPONDING);
+      playAudio(response.audioBase64, response.audioMimeType, () => {
+        setAudioState(AUDIO_STATE.IDLE);
+      });
+    } else {
+      setAudioState(AUDIO_STATE.IDLE);
+    }
+
+No scheduleNextListen.
+
+
+6. Remove auto-listen functions or make them no-ops.
+
+Remove:
+- scheduleNextListen
+- shouldAutoListen
+- startFollowUpRecording
+- FOLLOW_UP_WINDOW_MS usage for audio
+- autoListenTimer for mic start
+
+
+7. Disable barge-in monitor for MVP.
+
+Change playAudio:
+- remove startBargeInMonitor().
+- remove stopBargeInMonitor() unless needed for legacy cleanup.
+
+If user presses hotkey during response:
+- stopCurrentSpeech()
+- startVoiceFlow()
+
+
+8. Keep selected context as context only.
+
+Keep captureSelection during explicit hotkey/mic flow.
+Do not create any watcher on selection changes.
+
+
+9. Add blob guard before sendAudioRequest.
+
+Example:
+
+    if (blob.size < 3000) {
+      setAudioState(AUDIO_STATE.IDLE, "No speech detected.");
+      return;
+    }
+
+Also include durationMs if available.
+
+
+================================================================================
+F. EXACT BACKEND CHANGES NEEDED
+================================================================================
+
+1. Extend request contract.
+
+Add optional fields:
+
+    sessionId: str = "default"
+    taskId: str = ""
+    clientAudioState: str = ""
+    explicitTrigger: bool = True
+    audioDurationMs: int | None = None
+    audioSizeBytes: int | None = None
+
+
+2. Extend response contract.
+
+Add:
+
+    task: TaskSnapshot | None = None
+    mindState: Literal[
+      "NO_TASK",
+      "TASK_ACTIVE",
+      "EXPLAINING",
+      "DEBUGGING",
+      "WAITING_FOR_USER_RESULT",
+      "SIDE_CONVERSATION",
+      "RESOLVED",
+    ] = "NO_TASK"
+    shouldListenAgain: bool = False
+
+Important:
+For MVP, shouldListenAgain must always be false.
+
+
+3. Add request dedupe.
+
+In session_state or responder:
+
+    processed_request_ids = deque(maxlen=100)
+
+If requestId already processed:
+- return last response or no-op error.
+
+
+4. Add audio guardrails before STT.
+
+In transcript_for_request:
+- reject audioBase64 missing.
+- reject decoded audio below byte threshold.
+- reject audioDurationMs below threshold if provided.
+- reject punctuation-only transcript.
+- reject silence hallucinations.
+
+Current filter exists at:
+- local_service/agent_responder.py:688-702
+
+Add:
+
+    if len(audio_bytes) < MIN_AUDIO_BYTES:
+      return "", warnings, AgentError(code="empty_audio", message="No usable speech was recorded.")
+
+
+5. Return empty transcript without TTS.
+
+Current empty transcript returns ok=false. That is fine.
+Frontend should not retry/listen again.
+
+
+6. Add task memory update before final response.
+
+Implement:
+- get_or_create_task(...)
+- update_task_from_intent(...)
+- resolve_task_if_evidence(...)
+- render_task_context(...)
+
+
+================================================================================
+G. EXACT PROMPT CHANGES NEEDED
+================================================================================
+
+1. Orchestrator prompt should classify task relationship.
+
+Add output fields:
+
+    {
+      "intent": "...",
+      "route": "...",
+      "taskRelation": "new_task|continue_task|side_question_related|casual_chat|resolution|unclear",
+      "mindState": "...",
+      "needsClarification": false,
+      "clarifyingQuestion": ""
+    }
+
+2. Add task context to prompts.
+
+Example:
+
+    Current task:
+    {render_current_task(task)}
+
+    Rules:
+    - If the user asks a side question related to current task, answer it briefly and then return to the current task.
+    - If casual chat, respond naturally but do not clear current task.
+    - Do not mark resolved unless user says fixed/done/solved/working or tests passed.
+    - Give one next useful step, not a lecture.
+    - Friendly tone is allowed: "yrr", "pehle ye try kar", "agar same error aaye toh traceback bhej".
+
+3. Update answer prompt tone.
+
+Add:
+
+    Style:
+    - Sound like a coding friend, not a corporate chatbot.
+    - Use short Hinglish naturally when helpful.
+    - Prefer one next action.
+    - Avoid "I am listening" unless the mic is actually recording.
+
+4. Update patch prompt.
+
+Add:
+
+    After creating the patch, the assistant state should become WAITING_FOR_USER_RESULT unless tests pass.
+
+Patch prompt itself should still output code only. The state update should happen outside the patch prompt.
+
+
+================================================================================
+H. EXACT LANGGRAPH / SESSION MEMORY CHANGES NEEDED
+================================================================================
+
+Current graph is not actual LangGraph StateGraph.
+
+Option 1 for MVP:
+Keep manual node functions, but add task memory nodes.
+
+New manual workflow:
+
+    transcript_node
+    input_node
+    load_session_node
+    classify_intent_node
+    classify_task_relation_node
+    update_task_before_response_node
+    route:
+      control -> control_node
+      answer -> answer_node
+      patch -> patch_node
+      test -> test_node
+      clarify -> clarify_node
+    update_task_after_response_node
+    finalize_response
+
+Option 2 later:
+Convert to real LangGraph StateGraph with the same nodes.
+
+
+Task memory object
+
+Suggested Python model:
+
+    class CurrentTask(BaseModel):
+        taskId: str
+        status: Literal[
+            "NO_TASK",
+            "TASK_ACTIVE",
+            "EXPLAINING",
+            "DEBUGGING",
+            "WAITING_FOR_USER_RESULT",
+            "SIDE_CONVERSATION",
+            "RESOLVED",
+        ] = "NO_TASK"
+        intent: str = ""
+        title: str = ""
+        problemStatement: str = ""
+        fileName: str = ""
+        filePath: str = ""
+        projectRoot: str = ""
+        selectedCodeSummary: str = ""
+        selectedCodeHash: str = ""
+        attempts: list[dict] = []
+        lastAssistantStep: str = ""
+        waitingFor: str = ""
+        evidence: list[dict] = []
+        createdAt: float
+        updatedAt: float
+        resolvedAt: float | None = None
+
+
+Session state should store:
+
+    _STATE = {
+      "current_task": None,
+      "recent_turns": deque(maxlen=10),
+      "last_selected_code_summary": "",
+      "last_response_by_request_id": {},
+    }
+
+
+Session update rules
+
+1. If intent is fix/debug/review/explain/write_test and task is absent:
+   - create TASK_ACTIVE.
+
+2. If selectedText/filePath changes significantly:
+   - classify whether this is new task or updated context.
+
+3. If assistant gives a step:
+   - set status WAITING_FOR_USER_RESULT.
+   - waitingFor = "user_to_try_step" or "test_result".
+
+4. If user says:
+   - "done", "fixed", "solved", "working", "chal gaya", "ho gaya"
+   then status RESOLVED.
+
+5. If tests pass:
+   - status RESOLVED.
+
+6. If tests fail or user says same error:
+   - status TASK_ACTIVE or DEBUGGING.
+   - append attempt/evidence.
+
+7. Casual chat:
+   - do not clear current_task.
+   - answer chat.
+   - keep current_task unchanged.
+
+8. Related side question:
+   - status can temporarily be SIDE_CONVERSATION.
+   - response ends with return hook, e.g. "ab wapas current issue pe..."
+
+
+================================================================================
+I. FINAL DESIRED MVP FLOW
+================================================================================
+
+Audio state machine
+
+1. IDLE
+   - Mic is off.
+   - Assistant task memory may still be TASK_ACTIVE.
+   - UI says Ready / Press shortcut.
+
+2. LISTENING
+   - User explicitly pressed hotkey/mic/push-to-talk.
+   - Capture selected context snapshot.
+
+3. RECORDING
+   - MediaRecorder is active.
+   - Silence detection only decides when to stop current recording.
+   - It never schedules another recording.
+
+4. PROCESSING
+   - Audio blob sent to backend.
+   - Backend transcribes and runs agent.
+
+5. RESPONDING
+   - Neha speaks or displays answer.
+   - Mic is off.
+
+6. IDLE
+   - Always return here after one response.
+   - No auto-listen.
+
+
+Assistant mind state
+
+1. NO_TASK
+   - No active coding task.
+
+2. TASK_ACTIVE
+   - A code task exists.
+   - Audio can still be IDLE.
+
+3. EXPLAINING
+   - Explaining code/task.
+
+4. DEBUGGING
+   - Investigating failure.
+
+5. WAITING_FOR_USER_RESULT
+   - Neha gave a step and waits for user/test result.
+
+6. SIDE_CONVERSATION
+   - Temporary side question.
+   - Current task remains in memory.
+
+7. RESOLVED
+   - Only explicit user confirmation or tests passing.
+
+
+Desired interaction flow
+
+1. User highlights code.
+2. User presses hotkey or mic button.
+3. App captures selected text/context.
+4. App records voice once.
+5. Backend receives audio + selected code + file context.
+6. Backend transcribes.
+7. Agent creates/updates current_task.
+8. Agent responds in friendly short tone.
+9. Agent gives one next useful step.
+10. Audio returns to IDLE.
+11. Task remains active in backend session memory.
+12. Next explicit user message is treated as continuation unless clearly new task.
+
+
+================================================================================
+RECOMMENDED IMPLEMENTATION ORDER
+================================================================================
+
+Step 1: Frontend audio cleanup
+- Add AUDIO_STATE.
+- Remove scheduleNextListen calls.
+- Remove no-speech auto retry.
+- Disable barge-in mic monitor.
+- Ensure every final response goes to IDLE.
+
+Step 2: Backend task memory
+- Replace current_topic-only session with current_task object.
+- Add task status and resolution rules.
+- Add requestId dedupe.
+
+Step 3: Prompt upgrades
+- Add task context.
+- Add side-question handling.
+- Add friendly Hinglish coding-friend tone.
+- Add "one next useful step" rule.
+
+Step 4: Contract upgrades
+- Add task/mindState to response.
+- Add sessionId/taskId/audio metadata to request.
+
+Step 5: Guardrail hardening
+- Audio byte threshold.
+- Audio duration threshold.
+- Duplicate request cache.
+- Empty transcript returns no speech and no retry.
+
+
+================================================================================
+BOTTOM LINE
+================================================================================
+
+The main product mistake is not STT alone. The bigger issue is that the frontend treats "human-like conversation" as "keep listening automatically".
+
+The correct architecture is:
+- Audio is explicit, one-shot, and returns to IDLE after every response.
+- Task memory is persistent inside the backend session.
+- Human-like behavior comes from memory, tone, and task continuity, not from an always-on mic.
+

@@ -1,0 +1,12 @@
+{
+  "allowMicAccess": true,
+  "allowClipboardAccess": true,
+  "allowSelectedTextCapture": true,
+  "allowProjectFileRead": false,
+  "allowCloudSTT": false,
+  "allowCloudLLM": false,
+  "allowMeetingRecording": false,
+  "allowFileEdit": false,
+  "allowCommandRun": false,
+  "allowEmailSend": false
+}

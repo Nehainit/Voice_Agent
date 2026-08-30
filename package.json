@@ -1,0 +1,64 @@
+{
+  "name": "coding-rubber-duck-agent",
+  "displayName": "Coding Rubber Duck Agent",
+  "description": "A local voice-first VS Code coding companion powered by open-source models.",
+  "version": "0.0.1",
+  "publisher": "local",
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onCommand:codeDuck.openPanel",
+    "onCommand:codeDuck.explainSelection",
+    "onCommand:codeDuck.debugSelection",
+    "onCommand:codeDuck.reviewSelection"
+  ],
+  "main": "./src/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "codeDuck.openPanel",
+        "title": "CodeDuck: Open Voice Partner"
+      },
+      {
+        "command": "codeDuck.explainSelection",
+        "title": "CodeDuck: Explain Selection"
+      },
+      {
+        "command": "codeDuck.debugSelection",
+        "title": "CodeDuck: Debug Selection"
+      },
+      {
+        "command": "codeDuck.reviewSelection",
+        "title": "CodeDuck: Review Selection"
+      }
+    ],
+    "configuration": {
+      "title": "CodeDuck",
+      "properties": {
+        "codeDuck.serviceUrl": {
+          "type": "string",
+          "default": "http://127.0.0.1:8765",
+          "description": "Local voice service URL."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "check": "node --check src/extension.js && node --check electron/main.js && node --check electron/preload.js && node --check electron/renderer/renderer.js",
+    "electron": "electron electron/main.js",
+    "desktop": "electron electron/main.js",
+    "dev:backend": "npm run service:voice:light",
+    "dev:desktop": "npm run desktop",
+    "service": "env OLLAMA_MODEL=qwen2.5-coder:7b-instruct OLLAMA_NUM_CTX=4096 CODEDUCK_TTS=0 local_service/.venv/bin/python -m uvicorn local_service.app:app --host 127.0.0.1 --port 8765 --reload",
+    "service:voice": "env OLLAMA_MODEL=qwen2.5-coder:7b-instruct OLLAMA_NUM_CTX=4096 CODEDUCK_TTS=1 KOKORO_VOICE=af_heart local_service/.venv/bin/python -m uvicorn local_service.app:app --host 127.0.0.1 --port 8765 --reload",
+    "service:voice:light": "env OLLAMA_MODEL=llama3.2 OLLAMA_NUM_CTX=2048 CODEDUCK_TTS=1 KOKORO_VOICE=af_heart local_service/.venv/bin/python -m uvicorn local_service.app:app --host 127.0.0.1 --port 8765 --reload",
+    "service:light": "env OLLAMA_MODEL=llama3.2 OLLAMA_NUM_CTX=2048 CODEDUCK_TTS=0 local_service/.venv/bin/python -m uvicorn local_service.app:app --host 127.0.0.1 --port 8765 --reload"
+  },
+  "devDependencies": {
+    "electron": "^31.7.7"
+  }
+}

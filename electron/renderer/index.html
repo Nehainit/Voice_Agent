@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Neha</title>
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <main id="app" class="shell idle scene-idle">
+    <section class="visual-pane" aria-label="Neha visual presence">
+      <div class="brand-row">
+        <div class="brand-mark">N</div>
+        <div>
+          <div class="brand-name">Neha</div>
+          <div class="brand-subtitle">Desktop voice assistant</div>
+        </div>
+      </div>
+
+      <div id="visualStage" class="visual-stage" aria-hidden="true">
+        <div class="soft-sun"></div>
+        <div class="canvas-sheet"></div>
+        <div class="plant plant-left">
+          <span></span><span></span><span></span><span></span><span></span>
+        </div>
+        <div class="plant plant-right">
+          <span></span><span></span><span></span><span></span>
+        </div>
+        <div class="thread thread-a"></div>
+        <div class="thread thread-b"></div>
+        <div class="paint-stroke stroke-a"></div>
+        <div class="paint-stroke stroke-b"></div>
+        <div class="steam steam-a"></div>
+        <div class="steam steam-b"></div>
+        <div class="bowl"></div>
+        <div class="hand hand-left">
+          <div class="palm"></div>
+          <span class="finger f1"></span>
+          <span class="finger f2"></span>
+          <span class="finger f3"></span>
+          <span class="finger f4"></span>
+          <span class="thumb"></span>
+        </div>
+        <div class="hand hand-right">
+          <div class="palm"></div>
+          <span class="finger f1"></span>
+          <span class="finger f2"></span>
+          <span class="finger f3"></span>
+          <span class="finger f4"></span>
+          <span class="thumb"></span>
+        </div>
+      </div>
+
+      <div class="scene-caption">
+        <div id="sceneActivity" class="scene-activity">Waiting gently</div>
+        <div id="sceneHint" class="scene-hint">The bubble stays available on your desktop.</div>
+      </div>
+    </section>
+
+    <section class="assistant-pane">
+      <header class="app-header">
+        <div class="status-group">
+          <button id="micButton" class="mic" title="Talk to Neha" type="button">
+            <span class="mic-dot"></span>
+          </button>
+          <div class="summary">
+            <div id="status" class="status">Ready</div>
+            <div id="context" class="context">Click the mic or use the shortcut</div>
+          </div>
+        </div>
+        <div class="header-actions">
+          <button id="musicButton" class="icon-button music-on" title="Focus music" type="button" aria-label="Toggle focus music">&#9835;</button>
+          <button id="settingsButton" class="icon-button" title="Settings" type="button" aria-label="Settings">&#9881;</button>
+          <button id="closeButton" class="icon-button" title="Hide window" type="button" aria-label="Hide window">&#10005;</button>
+        </div>
+      </header>
+
+      <section id="messages" class="messages" aria-live="polite"></section>
+
+      <section id="projectRootPrompt" class="panel hidden">
+        <div class="panel-title">Choose project folder</div>
+        <p id="projectRootMessage" class="panel-copy">Choose the project folder so I can inspect related files before proposing a safer fix.</p>
+        <div class="actions">
+          <button id="chooseRootButton" type="button">Choose Folder</button>
+          <button id="selectedOnlyButton" class="secondary" type="button">Use Selection Only</button>
+          <button id="cancelRootButton" class="ghost" type="button">Cancel</button>
+        </div>
+      </section>
+
+      <section id="patchPanel" class="panel hidden">
+        <div class="panel-title">Proposed replacement</div>
+        <pre id="diffView" class="diff"></pre>
+        <div id="modifyBox" class="modify hidden">
+          <textarea id="modifyText" rows="3" placeholder="Tell Neha how to adjust the replacement"></textarea>
+          <button id="sendModifyButton" type="button">Send</button>
+        </div>
+        <div class="actions">
+          <button id="applyButton" type="button">Apply</button>
+          <button id="modifyButton" class="secondary" type="button">Modify</button>
+          <button id="copyPatchButton" class="secondary" type="button">Copy</button>
+          <button id="cancelPatchButton" class="ghost" type="button">Cancel</button>
+        </div>
+      </section>
+    </section>
+
+    <aside id="settingsPanel" class="settings-panel hidden" aria-label="Settings">
+      <div class="settings-card">
+        <div class="settings-header">
+          <div>
+            <div class="settings-title">Settings</div>
+            <div class="settings-subtitle">Desktop AI team controls</div>
+          </div>
+          <button id="closeSettingsButton" class="icon-button" type="button" aria-label="Close settings">&#10005;</button>
+        </div>
+        <label class="setting-row">
+          <span>Mode</span>
+          <select id="modeSelect">
+            <option value="agent">Agent</option>
+            <option value="dictation">Dictation</option>
+            <option value="meeting">Meeting</option>
+          </select>
+        </label>
+        <label class="setting-row">
+          <span>Agent</span>
+          <select id="agentSelect"></select>
+        </label>
+        <label class="setting-row">
+          <span>Language</span>
+          <select id="languageSelect">
+            <option value="Hinglish">Hinglish</option>
+            <option value="English">English</option>
+            <option value="Auto">Auto</option>
+          </select>
+        </label>
+        <div class="setting-row">
+          <span>Voice</span>
+          <strong>Female - af_heart</strong>
+        </div>
+        <div class="setting-row">
+          <span>Memory</span>
+          <strong>Important only</strong>
+        </div>
+        <div class="setting-row">
+          <span>Bubble</span>
+          <strong>Always available</strong>
+        </div>
+      </div>
+    </aside>
+  </main>
+  <script src="./renderer.js"></script>
+</body>
+</html>

@@ -1,0 +1,13 @@
+{
+  "llmProvider": "ollama",
+  "llmModel": "qwen2.5-coder:7b-instruct",
+  "sttProvider": "faster-whisper",
+  "sttModel": "small.en",
+  "ttsProvider": "off",
+  "ttsModel": "kokoro",
+  "ttsVoice": "af_heart",
+  "recordingSeconds": 8.0,
+  "numCtx": 4096,
+  "patchIterations": 1,
+  "testIterations": 1
+}

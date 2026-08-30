@@ -1,0 +1,1 @@
+"""Local service for CodeDuck."""

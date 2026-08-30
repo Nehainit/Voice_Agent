@@ -1,0 +1,9 @@
+{
+  "language": {
+    "preferredResponseLanguage": "Hinglish",
+    "transcriptionLanguage": "Auto",
+    "keepTechnicalTermsEnglish": true
+  },
+  "activeAgentId": "code_assistant",
+  "inputMode": "agent"
+}

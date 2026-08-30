@@ -1,0 +1,22 @@
+{
+  "stt": {
+    "provider": "faster_whisper",
+    "model": "small.en",
+    "modelPath": "",
+    "language": "Auto",
+    "apiKey": ""
+  },
+  "llm": {
+    "provider": "ollama",
+    "model": "llama3.2",
+    "baseUrl": "http://127.0.0.1:11434",
+    "apiKey": ""
+  },
+  "tts": {
+    "provider": "local_tts",
+    "voice": "af_heart",
+    "speed": 1.0,
+    "enabled": true,
+    "apiKey": ""
+  }
+}

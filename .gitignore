@@ -1,0 +1,10 @@
+node_modules/
+.DS_Store
+local_service/.venv/
+dograh_local/
+dograh_rebuild/dograh_clone/
+__pycache__/
+.pytest_cache/
+*.pyc
+*.db
+.env

@@ -1,0 +1,6 @@
+.git/**
+.vscode/**
+local_service/.venv/**
+__pycache__/**
+*.pyc
+README.md

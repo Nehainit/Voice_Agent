@@ -1,0 +1,66 @@
+{
+  "agents": [
+    {
+      "agentId": "code_assistant",
+      "name": "Codey",
+      "aliases": ["codey", "coder", "code assistant"],
+      "type": "code",
+      "defaultLanguage": "Hinglish",
+      "tools": ["read_selected_code", "inspect_file_context", "search_project", "propose_patch", "run_tests"],
+      "permissions": {
+        "canReadSelectedText": true,
+        "canReadProjectFiles": false,
+        "canEditFiles": false,
+        "canRunCommands": false
+      }
+    },
+    {
+      "agentId": "meeting_assistant",
+      "name": "Mira",
+      "aliases": ["mira", "meeting assistant"],
+      "type": "meeting",
+      "defaultLanguage": "English",
+      "tools": ["start_meeting_transcription", "stop_meeting_transcription", "summarize_meeting"],
+      "permissions": {
+        "canRecordMeeting": false,
+        "canReadCalendar": false,
+        "canSendEmail": false
+      }
+    },
+    {
+      "agentId": "email_assistant",
+      "name": "Maila",
+      "aliases": ["maila", "email assistant"],
+      "type": "email",
+      "defaultLanguage": "English",
+      "tools": ["rewrite_selected_text", "create_email_draft", "paste_to_focused_app"],
+      "permissions": {
+        "canReadSelectedText": true,
+        "canPasteText": true,
+        "canSendEmail": false
+      }
+    },
+    {
+      "agentId": "sales_assistant",
+      "name": "Sia",
+      "aliases": ["sia", "sales assistant"],
+      "type": "sales",
+      "defaultLanguage": "English",
+      "tools": ["draft_client_message", "create_proposal", "create_follow_up"],
+      "permissions": {
+        "canReadSelectedText": true,
+        "canPasteText": true,
+        "canSendEmail": false
+      }
+    },
+    {
+      "agentId": "general_assistant",
+      "name": "Neha",
+      "aliases": ["neha", "assistant", "buddy"],
+      "type": "general",
+      "defaultLanguage": "Hinglish",
+      "tools": ["speak_response", "copy_to_clipboard"],
+      "permissions": {}
+    }
+  ]
+}
